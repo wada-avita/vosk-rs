@@ -13,12 +13,20 @@ use std::{
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    ChannelCount, SampleFormat,
+    ChannelCount, Device, SampleFormat, SupportedStreamConfig,
 };
 use dasp::{sample::ToSample, Sample};
 use vosk::{DecodingState, Model, Recognizer};
 
-fn main() {
+struct Config {
+    model: Model,
+    record_duration: Duration,
+    supported_stream_config: SupportedStreamConfig,
+    audio_input_device: Device,
+    channels: u16,
+}
+
+fn parse_args() -> Config {
     let mut args = env::args();
     args.next();
 
@@ -36,65 +44,120 @@ fn main() {
         .default_input_device()
         .expect("No input device connected");
 
-    let config = audio_input_device
+    let supported_stream_config = audio_input_device
         .default_input_config()
         .expect("Failed to load default input config");
-    let channels = config.channels();
+    let channels = supported_stream_config.channels();
 
     let model = Model::new(model_path).expect("Could not create the model");
-    let mut recognizer = Recognizer::new(&model, config.sample_rate().0 as f32)
-        .expect("Could not create the Recognizer");
 
-    recognizer.set_max_alternatives(10);
+    Config {
+        model,
+        record_duration,
+        supported_stream_config,
+        audio_input_device,
+        channels,
+    }
+}
+
+fn update_settings(recognizer: &mut Recognizer, max_alternatives: u16) {
+    recognizer.set_max_alternatives(max_alternatives);
     recognizer.set_words(true);
     recognizer.set_partial_words(true);
+}
+
+fn main() {
+    let config = parse_args();
+    let mut recognizer = Recognizer::new(
+        &config.model,
+        config.supported_stream_config.sample_rate().0 as f32,
+    )
+    .expect("Could not create the Recognizer");
+    let max_alternatives = 10;
+    update_settings(&mut recognizer, max_alternatives);
 
     let recognizer = Arc::new(Mutex::new(recognizer));
+    let current_text = Arc::new(Mutex::new(String::new()));
+    let prev_partial = Arc::new(Mutex::new(String::new()));
 
+    let (stream, record_duration) =
+        start_recognition(recognizer, current_text, prev_partial, config);
+
+    std::thread::sleep(record_duration);
+    drop(stream);
+
+    // println!("{:#?}", recognizer.lock().unwrap().final_result());
+}
+
+fn start_recognition(
+    recognizer: Arc<Mutex<Recognizer>>,
+    current_text: Arc<Mutex<String>>,
+    prev_partial: Arc<Mutex<String>>,
+    config: Config,
+) -> (cpal::Stream, Duration) {
+    let recognizer_clone = recognizer.clone();
+    let current_text_clone = current_text.clone();
+    let prev_partial_clone = prev_partial.clone();
+
+    let record_duration = config.record_duration;
+
+    let stream = create_stream(
+        config,
+        recognizer_clone,
+        current_text_clone,
+        prev_partial_clone,
+    )
+    .expect("Could not build stream");
+    stream.play().expect("Could not play stream");
+    println!("Recording...");
+
+    (stream, record_duration)
+}
+
+fn create_stream(
+    config: Config,
+    recognizer_clone: Arc<Mutex<Recognizer>>,
+    current_text_clone: Arc<Mutex<String>>,
+    prev_partial_clone: Arc<Mutex<String>>,
+) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let err_fn = move |err| {
         eprintln!("an error occurred on stream: {}", err);
     };
 
-    let current_text = Arc::new(Mutex::new(String::new()));
-    let prev_partial = Arc::new(Mutex::new(String::new()));
-
-    let recognizer_clone = recognizer.clone();
-    let current_text_clone = current_text.clone();
-    let prev_partial_clone = prev_partial.clone();
-    let stream = match config.sample_format() {
-        SampleFormat::F32 => audio_input_device.build_input_stream(
-            &config.into(),
+    match config.supported_stream_config.sample_format() {
+        SampleFormat::F32 => config.audio_input_device.build_input_stream(
+            &config.supported_stream_config.into(),
             move |data: &[f32], _| {
                 recognize(
                     &mut recognizer_clone.lock().unwrap(),
                     data,
-                    channels,
+                    config.channels,
                     &mut current_text_clone.lock().unwrap(),
                     &mut prev_partial_clone.lock().unwrap(),
                 )
             },
             err_fn,
         ),
-        SampleFormat::U16 => audio_input_device.build_input_stream(
-            &config.into(),
+        SampleFormat::U16 => config.audio_input_device.build_input_stream(
+            &config.supported_stream_config.into(),
             move |data: &[u16], _| {
                 recognize(
                     &mut recognizer_clone.lock().unwrap(),
                     data,
-                    channels,
+                    config.channels,
                     &mut current_text_clone.lock().unwrap(),
                     &mut prev_partial_clone.lock().unwrap(),
                 )
             },
             err_fn,
         ),
-        SampleFormat::I16 => audio_input_device.build_input_stream(
-            &config.into(),
+        SampleFormat::I16 => config.audio_input_device.build_input_stream(
+            &config.supported_stream_config.into(),
             move |data: &[i16], _| {
                 recognize(
                     &mut recognizer_clone.lock().unwrap(),
                     data,
-                    channels,
+                    config.channels,
                     &mut current_text_clone.lock().unwrap(),
                     &mut prev_partial_clone.lock().unwrap(),
                 )
@@ -102,15 +165,6 @@ fn main() {
             err_fn,
         ),
     }
-    .expect("Could not build stream");
-
-    stream.play().expect("Could not play stream");
-    println!("Recording...");
-
-    std::thread::sleep(record_duration);
-    drop(stream);
-
-    // println!("{:#?}", recognizer.lock().unwrap().final_result());
 }
 
 fn recognize<T: Sample + ToSample<i16>>(
