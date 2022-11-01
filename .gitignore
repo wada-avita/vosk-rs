@@ -1,2 +1,5 @@
 /target
 /Cargo.lock
+vosk-win64*
+vosk-model*
+sample_files/
