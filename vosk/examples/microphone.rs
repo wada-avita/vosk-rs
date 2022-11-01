@@ -81,7 +81,7 @@ fn main() {
     std::thread::sleep(record_duration);
     drop(stream);
 
-    println!("{:#?}", recognizer.lock().unwrap().final_result());
+    // println!("{:#?}", recognizer.lock().unwrap().final_result());
 }
 
 fn recognize<T: Sample + ToSample<i16>>(
@@ -99,11 +99,16 @@ fn recognize<T: Sample + ToSample<i16>>(
     let state = recognizer.accept_waveform(&data);
     match state {
         DecodingState::Running => {
-            println!("partial: {:#?}", recognizer.partial_result());
+            // println!("partial: {:#?}", recognizer.partial_result());
+            let partial_result = recognizer.partial_result();
+            println!("partial: {}", partial_result.partial);
         }
         DecodingState::Finalized => {
             // Result will always be multiple because we called set_max_alternatives
-            println!("result: {:#?}", recognizer.result().multiple().unwrap());
+            // println!("result: {:#?}", recognizer.result().multiple().unwrap());
+            let final_result_single = recognizer.result().single().unwrap();
+            let text = final_result_single.text;
+            println!("result: {}", text);
         }
         DecodingState::Failed => eprintln!("error"),
     }
