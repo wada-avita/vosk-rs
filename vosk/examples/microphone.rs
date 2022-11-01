@@ -22,10 +22,12 @@ fn main() {
     let mut args = env::args();
     args.next();
 
-    let model_path = args.next().expect("A model path was not provided");
+    let model_path = args
+        .next()
+        .expect("A model path(ex: vosk-model-small-ja-0.22) was not provided");
     let record_duration = Duration::from_secs(
         args.next()
-            .expect("A recording duration was not provided")
+            .expect("A recording duration(ex: 10) was not provided")
             .parse()
             .expect("Invalid recording duration"),
     );
